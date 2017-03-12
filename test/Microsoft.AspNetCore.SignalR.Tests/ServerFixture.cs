@@ -2,14 +2,13 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Builder;
-using Xunit;
-using System.Diagnostics;
 
 namespace Microsoft.AspNetCore.SignalR.Tests
 {
@@ -30,7 +29,7 @@ namespace Microsoft.AspNetCore.SignalR.Tests
             var _verbose = string.Equals(Environment.GetEnvironmentVariable("SIGNALR_TESTS_VERBOSE"), "1");
             if (_verbose)
             {
-                _loggerFactory.AddConsole();
+                _loggerFactory.AddConsole(LogLevel.Debug);
             }
             if (Debugger.IsAttached)
             {
@@ -45,7 +44,7 @@ namespace Microsoft.AspNetCore.SignalR.Tests
             {
                 services.AddSockets();
                 services.AddSignalR();
-                services.AddSingleton<EchoEndPoint>();
+                services.AddEndPoint<EchoEndPoint>();
             }
 
             public void Configure(IApplicationBuilder app, IHostingEnvironment env)
@@ -67,7 +66,7 @@ namespace Microsoft.AspNetCore.SignalR.Tests
             var t = Task.Run(() => host.Start());
             Console.WriteLine("Starting test server...");
             lifetime = host.Services.GetRequiredService<IApplicationLifetime>();
-            if (!lifetime.ApplicationStarted.WaitHandle.WaitOne(TimeSpan.FromSeconds(1)))
+            if (!lifetime.ApplicationStarted.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)))
             {
                 // t probably faulted
                 if (t.IsFaulted)

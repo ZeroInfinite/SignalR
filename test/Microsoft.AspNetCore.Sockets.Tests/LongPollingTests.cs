@@ -1,4 +1,4 @@
-// Copyright (c) .NET Foundation. All rights reserved.
+﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System.IO;
@@ -39,7 +39,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
             context.Response.Body = ms;
 
             await channel.Out.WriteAsync(new Message(
-                ReadableBuffer.Create(Encoding.UTF8.GetBytes("Hello World")).Preserve(),
+                Encoding.UTF8.GetBytes("Hello World"),
                 MessageType.Text,
                 endOfMessage: true));
 
@@ -48,7 +48,37 @@ namespace Microsoft.AspNetCore.Sockets.Tests
             await poll.ProcessRequestAsync(context, context.RequestAborted);
 
             Assert.Equal(200, context.Response.StatusCode);
-            Assert.Equal("Hello World", Encoding.UTF8.GetString(ms.ToArray()));
+            Assert.Equal("T11:T:Hello World;", Encoding.UTF8.GetString(ms.ToArray()));
+        }
+
+        [Fact]
+        public async Task MultipleFramesSentAsSingleResponse()
+        {
+            var channel = Channel.CreateUnbounded<Message>();
+            var context = new DefaultHttpContext();
+            var poll = new LongPollingTransport(channel, new LoggerFactory());
+            var ms = new MemoryStream();
+            context.Response.Body = ms;
+
+            await channel.Out.WriteAsync(new Message(
+                Encoding.UTF8.GetBytes("Hello"),
+                MessageType.Text,
+                endOfMessage: true));
+            await channel.Out.WriteAsync(new Message(
+                Encoding.UTF8.GetBytes(" "),
+                MessageType.Text,
+                endOfMessage: true));
+            await channel.Out.WriteAsync(new Message(
+                Encoding.UTF8.GetBytes("World"),
+                MessageType.Text,
+                endOfMessage: true));
+
+            Assert.True(channel.Out.TryComplete());
+
+            await poll.ProcessRequestAsync(context, context.RequestAborted);
+
+            Assert.Equal(200, context.Response.StatusCode);
+            Assert.Equal("T5:T:Hello;1:T: ;5:T:World;", Encoding.UTF8.GetString(ms.ToArray()));
         }
     }
 }

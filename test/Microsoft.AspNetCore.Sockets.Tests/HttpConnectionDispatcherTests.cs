@@ -1,4 +1,4 @@
-// Copyright (c) .NET Foundation. All rights reserved.
+﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
@@ -26,7 +26,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
             var dispatcher = new HttpConnectionDispatcher(manager, new LoggerFactory());
             var context = new DefaultHttpContext();
             var services = new ServiceCollection();
-            services.AddSingleton<TestEndPoint>();
+            services.AddEndPoint<TestEndPoint>();
             context.RequestServices = services.BuildServiceProvider();
             var ms = new MemoryStream();
             context.Request.Path = "/negotiate";
@@ -56,7 +56,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
                 context.Response.Body = strm;
 
                 var services = new ServiceCollection();
-                services.AddSingleton<TestEndPoint>();
+                services.AddEndPoint<TestEndPoint>();
                 context.RequestServices = services.BuildServiceProvider();
                 context.Request.Path = path;
                 var values = new Dictionary<string, StringValues>();
@@ -85,7 +85,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
                 var context = new DefaultHttpContext();
                 context.Response.Body = strm;
                 var services = new ServiceCollection();
-                services.AddSingleton<TestEndPoint>();
+                services.AddEndPoint<TestEndPoint>();
                 context.RequestServices = services.BuildServiceProvider();
                 context.Request.Path = path;
 
@@ -251,7 +251,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
 
             var task = dispatcher.ExecuteAsync<TestEndPoint>("", context);
 
-            var buffer = ReadableBuffer.Create(Encoding.UTF8.GetBytes("Hello World")).Preserve();
+            var buffer = Encoding.UTF8.GetBytes("Hello World");
 
             // Write to the transport so the poll yields
             await state.Connection.Transport.Output.WriteAsync(new Message(buffer, MessageType.Text, endOfMessage: true));
@@ -276,7 +276,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
 
             var task = dispatcher.ExecuteAsync<BlockingEndPoint>("", context);
 
-            var buffer = ReadableBuffer.Create(Encoding.UTF8.GetBytes("Hello World")).Preserve();
+            var buffer = Encoding.UTF8.GetBytes("Hello World");
 
             // Write to the application
             await state.Application.Output.WriteAsync(new Message(buffer, MessageType.Text, endOfMessage: true));
@@ -301,7 +301,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
 
             var task = dispatcher.ExecuteAsync<BlockingEndPoint>("", context);
 
-            var buffer = ReadableBuffer.Create(Encoding.UTF8.GetBytes("Hello World")).Preserve();
+            var buffer = Encoding.UTF8.GetBytes("Hello World");
 
             // Write to the application
             await state.Application.Output.WriteAsync(new Message(buffer, MessageType.Text, endOfMessage: true));
@@ -318,7 +318,7 @@ namespace Microsoft.AspNetCore.Sockets.Tests
         {
             var context = new DefaultHttpContext();
             var services = new ServiceCollection();
-            services.AddSingleton<TEndPoint>();
+            services.AddEndPoint<TEndPoint>();
             context.RequestServices = services.BuildServiceProvider();
             context.Request.Path = path;
             var values = new Dictionary<string, StringValues>();

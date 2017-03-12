@@ -3,11 +3,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO.Pipelines;
 using System.Text;
+using Microsoft.AspNetCore.Sockets.Tests;
 using Xunit;
 
-namespace Microsoft.AspNetCore.Sockets.Tests
+namespace Microsoft.AspNetCore.Sockets.Formatters.Tests
 {
     public class TextMessageFormatterTests
     {
@@ -39,6 +39,8 @@ namespace Microsoft.AspNetCore.Sockets.Tests
         [Theory]
         [InlineData("0:B:;", new byte[0])]
         [InlineData("8:B:q83vEg==;", new byte[] { 0xAB, 0xCD, 0xEF, 0x12 })]
+        [InlineData("8:B:q83vEjQ=;", new byte[] { 0xAB, 0xCD, 0xEF, 0x12, 0x34 })]
+        [InlineData("8:B:q83vEjRW;", new byte[] { 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56 })]
         public void WriteBinaryMessage(string encoded, byte[] payload)
         {
             var message = MessageTestUtils.CreateMessage(payload);
@@ -72,10 +74,11 @@ namespace Microsoft.AspNetCore.Sockets.Tests
         [Fact]
         public void WriteInvalidMessages()
         {
-            var message = new Message(ReadableBuffer.Create(new byte[0]).Preserve(), MessageType.Binary, endOfMessage: false);
-            var ex = Assert.Throws<InvalidOperationException>(() =>
+            var message = new Message(new byte[0], MessageType.Binary, endOfMessage: false);
+            var ex = Assert.Throws<ArgumentException>(() =>
                 MessageFormatter.TryFormatMessage(message, Span<byte>.Empty, MessageFormat.Text, out var written));
-            Assert.Equal("Cannot format message where endOfMessage is false using this format", ex.Message);
+            Assert.Equal($"Cannot format message where endOfMessage is false using this format{Environment.NewLine}Parameter name: message", ex.Message);
+            Assert.Equal("message", ex.ParamName);
         }
 
         [Theory]
@@ -99,6 +102,8 @@ namespace Microsoft.AspNetCore.Sockets.Tests
         [Theory]
         [InlineData("0:B:;", new byte[0])]
         [InlineData("8:B:q83vEg==;", new byte[] { 0xAB, 0xCD, 0xEF, 0x12 })]
+        [InlineData("8:B:q83vEjQ=;", new byte[] { 0xAB, 0xCD, 0xEF, 0x12, 0x34 })]
+        [InlineData("8:B:q83vEjRW;", new byte[] { 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56 })]
         public void ReadBinaryMessage(string encoded, byte[] payload)
         {
             var buffer = Encoding.UTF8.GetBytes(encoded);
@@ -151,6 +156,51 @@ namespace Microsoft.AspNetCore.Sockets.Tests
             var buffer = Encoding.UTF8.GetBytes(encoded);
             Assert.False(MessageFormatter.TryParseMessage(buffer, MessageFormat.Text, out var message, out var consumed));
             Assert.Equal(0, consumed);
+        }
+
+        [Theory]
+        [InlineData(new byte[] { 0xAB, 0xCD, 0xEF, 0x12 })]
+        [InlineData(new byte[] { 0xAB, 0xCD, 0xEF, 0x12, 0x34 })]
+        [InlineData(new byte[] { 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56 })]
+        public void InsufficientWriteBufferSpaceBinary(byte[] payload)
+        {
+            const int ExpectedSize = 13;
+            var message = MessageTestUtils.CreateMessage(payload);
+
+            byte[] buffer;
+            int bufferSize;
+            int written;
+            for (bufferSize = 0; bufferSize < ExpectedSize; bufferSize++)
+            {
+                buffer = new byte[bufferSize];
+                Assert.False(MessageFormatter.TryFormatMessage(message, buffer, MessageFormat.Text, out written));
+                Assert.Equal(0, written);
+            }
+
+            buffer = new byte[bufferSize];
+            Assert.True(MessageFormatter.TryFormatMessage(message, buffer, MessageFormat.Text, out written));
+            Assert.Equal(ExpectedSize, written);
+        }
+
+        [Fact]
+        public void InsufficientWriteBufferSpaceText()
+        {
+            const int ExpectedSize = 9;
+            var message = MessageTestUtils.CreateMessage("Test", MessageType.Text);
+
+            byte[] buffer;
+            int bufferSize;
+            int written;
+            for (bufferSize = 0; bufferSize < ExpectedSize; bufferSize++)
+            {
+                buffer = new byte[bufferSize];
+                Assert.False(MessageFormatter.TryFormatMessage(message, buffer, MessageFormat.Text, out written));
+                Assert.Equal(0, written);
+            }
+
+            buffer = new byte[bufferSize];
+            Assert.True(MessageFormatter.TryFormatMessage(message, buffer, MessageFormat.Text, out written));
+            Assert.Equal(ExpectedSize, written);
         }
     }
 }

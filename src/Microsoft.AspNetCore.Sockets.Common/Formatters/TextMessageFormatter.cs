@@ -2,10 +2,11 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Binary;
 using System.IO.Pipelines;
 using System.Text;
 
-namespace Microsoft.AspNetCore.Sockets
+namespace Microsoft.AspNetCore.Sockets.Formatters
 {
     internal static class TextMessageFormatter
     {
@@ -19,10 +20,10 @@ namespace Microsoft.AspNetCore.Sockets
         internal static bool TryFormatMessage(Message message, Span<byte> buffer, out int bytesWritten)
         {
             // Calculate the length, it's the number of characters for text messages, but number of base64 characters for binary
-            var length = message.Payload.Buffer.Length;
+            var length = message.Payload.Length;
             if (message.Type == MessageType.Binary)
             {
-                length = (int)(4 * Math.Ceiling(((double)message.Payload.Buffer.Length / 3)));
+                length = (int)(4 * Math.Ceiling(((double)message.Payload.Length / 3)));
             }
 
             // Write the length as a string
@@ -38,7 +39,7 @@ namespace Microsoft.AspNetCore.Sockets
             // We need at least 4 more characters of space (':', type flag, ':', and eventually the terminating ';')
             // We'll still need to double-check that we have space for the terminator after we write the payload,
             // but this way we can exit early if the buffer is way too small.
-            if (buffer.Length < 4)
+            if (buffer.Length < 4 + length)
             {
                 bytesWritten = 0;
                 return false;
@@ -56,27 +57,25 @@ namespace Microsoft.AspNetCore.Sockets
             // Payload
             if (message.Type == MessageType.Binary)
             {
-                // Encode the payload. For now, we make it an array and use the old-fashioned types because we need to mirror packages
-                // I've filed https://github.com/aspnet/SignalR/issues/192 to update this. -anurse
-                var payload = Convert.ToBase64String(message.Payload.Buffer.ToArray());
-                if (!TextEncoder.Utf8.TryEncode(payload, buffer, out int payloadWritten))
+                // Encode the payload directly into the buffer
+                var writtenByPayload = Base64.Encode(message.Payload, buffer);
+
+                // Check that we wrote enough. Length was already set (above) to the expected length in base64-encoded bytes
+                if (writtenByPayload < length)
                 {
                     bytesWritten = 0;
                     return false;
                 }
-                written += payloadWritten;
-                buffer = buffer.Slice(payloadWritten);
+
+                // We did, advance the buffers and continue
+                buffer = buffer.Slice(writtenByPayload);
+                written += writtenByPayload;
             }
             else
             {
-                if (buffer.Length < message.Payload.Buffer.Length)
-                {
-                    bytesWritten = 0;
-                    return false;
-                }
-                message.Payload.Buffer.CopyTo(buffer.Slice(0, message.Payload.Buffer.Length));
-                written += message.Payload.Buffer.Length;
-                buffer = buffer.Slice(message.Payload.Buffer.Length);
+                message.Payload.CopyTo(buffer.Slice(0, message.Payload.Length));
+                written += message.Payload.Length;
+                buffer = buffer.Slice(message.Payload.Length);
             }
 
             // Terminator
@@ -114,8 +113,8 @@ namespace Microsoft.AspNetCore.Sockets
             }
 
             // Check if there's enough space in the buffer to even bother continuing
-            // There are at least 4 characters we still expect to see: ':', type flag, ':', ';'.
-            if (buffer.Length < 4)
+            // There are at least 4 characters we still expect to see: ':', type flag, ':', ';', plus the (encoded) payload length.
+            if (buffer.Length < 4 + length)
             {
                 message = default(Message);
                 bytesConsumed = 0;
@@ -149,44 +148,38 @@ namespace Microsoft.AspNetCore.Sockets
             buffer = buffer.Slice(3);
             consumedSoFar += 3;
 
-            // We expect to see <length>+1 more characters. Since <length> is the exact number of bytes in the text (even if base64-encoded)
-            // and we expect to see the ';'
-            if (buffer.Length < length + 1)
-            {
-                message = default(Message);
-                bytesConsumed = 0;
-                return false;
-            }
-
             // Grab the payload buffer
-            var payloadBuffer = buffer.Slice(0, length);
+            var payload = buffer.Slice(0, length);
             buffer = buffer.Slice(length);
             consumedSoFar += length;
 
             // Parse the payload. For now, we make it an array and use the old-fashioned types.
             // I've filed https://github.com/aspnet/SignalR/issues/192 to update this. -anurse
-            var payloadArray = payloadBuffer.ToArray();
-            PreservedBuffer payload;
-            if (messageType == MessageType.Binary)
+            if (messageType == MessageType.Binary && payload.Length > 0)
             {
-                byte[] decoded;
-                try
+                // Determine the output size
+                // Every 4 Base64 characters represents 3 bytes
+                var decodedLength = (int)((payload.Length / 4) * 3);
+
+                // Subtract padding bytes
+                if (payload[payload.Length - 1] == '=')
                 {
-                    var str = Encoding.UTF8.GetString(payloadArray);
-                    decoded = Convert.FromBase64String(str);
+                    decodedLength -= 1;
                 }
-                catch
+                if (payload.Length > 1 && payload[payload.Length - 2] == '=')
                 {
-                    // Decoding failure
+                    decodedLength -= 1;
+                }
+
+                // Allocate a new buffer to decode to
+                var decodeBuffer = new byte[decodedLength];
+                if (Base64.Decode(payload, decodeBuffer) != decodedLength)
+                {
                     message = default(Message);
                     bytesConsumed = 0;
                     return false;
                 }
-                payload = ReadableBuffer.Create(decoded).Preserve();
-            }
-            else
-            {
-                payload = ReadableBuffer.Create(payloadArray).Preserve();
+                payload = decodeBuffer;
             }
 
             // Verify the trailer
@@ -197,7 +190,7 @@ namespace Microsoft.AspNetCore.Sockets
                 return false;
             }
 
-            message = new Message(payload, messageType);
+            message = new Message(payload.ToArray(), messageType);
             bytesConsumed = consumedSoFar + 1;
             return true;
         }

@@ -30,8 +30,8 @@ namespace Microsoft.AspNetCore.SignalR.Tests
             var transportToApplication = Channel.CreateUnbounded<Message>();
             var applicationToTransport = Channel.CreateUnbounded<Message>();
 
-            Application = ChannelConnection.Create(input: applicationToTransport, output: transportToApplication);
-            var transport = ChannelConnection.Create(input: transportToApplication, output: applicationToTransport);
+            Application = ChannelConnection.Create<Message>(input: applicationToTransport, output: transportToApplication);
+            var transport = ChannelConnection.Create<Message>(input: transportToApplication, output: applicationToTransport);
 
             Connection = new Connection(Guid.NewGuid().ToString(), transport);
             Connection.Metadata["formatType"] = format;
@@ -63,8 +63,7 @@ namespace Microsoft.AspNetCore.SignalR.Tests
             },
             stream);
 
-            var buffer = ReadableBuffer.Create(stream.ToArray()).Preserve();
-            await Application.Output.WriteAsync(new Message(buffer, MessageType.Binary, endOfMessage: true));
+            await Application.Output.WriteAsync(new Message(stream.ToArray(), MessageType.Binary, endOfMessage: true));
         }
 
         public async Task<T> Read<T>() where T : InvocationMessage
@@ -87,11 +86,8 @@ namespace Microsoft.AspNetCore.SignalR.Tests
             Message message;
             if (Application.Input.TryRead(out message))
             {
-                using (message)
-                {
-                    var value = await _adapter.ReadMessageAsync(new MemoryStream(message.Payload.Buffer.ToArray()), _binder);
-                    return value as T;
-                }
+                var value = await _adapter.ReadMessageAsync(new MemoryStream(message.Payload), _binder);
+                return value as T;
             }
 
             return null;

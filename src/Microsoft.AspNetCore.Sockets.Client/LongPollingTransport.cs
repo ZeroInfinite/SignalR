@@ -2,13 +2,15 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.IO.Pipelines;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Sockets.Client.Internal;
+using Microsoft.AspNetCore.Sockets.Formatters;
 using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Logging;
 
@@ -21,20 +23,24 @@ namespace Microsoft.AspNetCore.Sockets.Client
 
         private readonly HttpClient _httpClient;
         private readonly ILogger _logger;
-        private IChannelConnection<Message> _application;
+        private IChannelConnection<SendMessage, Message> _application;
         private Task _sender;
         private Task _poller;
         private readonly CancellationTokenSource _transportCts = new CancellationTokenSource();
 
-        public Task Running { get; private set; }
+        public Task Running { get; private set; } = Task.CompletedTask;
+
+        public LongPollingTransport(HttpClient httpClient) 
+            : this(httpClient, null)
+        { }
 
         public LongPollingTransport(HttpClient httpClient, ILoggerFactory loggerFactory)
         {
             _httpClient = httpClient;
-            _logger = loggerFactory.CreateLogger<LongPollingTransport>();
+            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<LongPollingTransport>();
         }
 
-        public Task StartAsync(Uri url, IChannelConnection<Message> application)
+        public Task StartAsync(Uri url, IChannelConnection<SendMessage, Message> application)
         {
             _application = application;
 
@@ -83,15 +89,17 @@ namespace Microsoft.AspNetCore.Sockets.Client
                     }
                     else
                     {
-                        var ms = new MemoryStream();
-                        await response.Content.CopyToAsync(ms);
-                        var message = new Message(ReadableBuffer.Create(ms.ToArray()).Preserve(), MessageType.Text);
+                        // Read the whole payload
+                        var payload = await response.Content.ReadAsByteArrayAsync();
 
-                        while (await _application.Output.WaitToWriteAsync(cancellationToken))
+                        foreach (var message in ReadMessages(payload))
                         {
-                            if (_application.Output.TryWrite(message))
+                            while (!_application.Output.TryWrite(message))
                             {
-                                break;
+                                if (cancellationToken.IsCancellationRequested || !await _application.Output.WaitToWriteAsync(cancellationToken))
+                                {
+                                    return;
+                                }
                             }
                         }
                     }
@@ -113,33 +121,61 @@ namespace Microsoft.AspNetCore.Sockets.Client
             }
         }
 
+        private IEnumerable<Message> ReadMessages(ReadOnlySpan<byte> payload)
+        {
+            if (payload.Length == 0)
+            {
+                yield break;
+            }
+
+            var messageFormat = MessageFormatter.GetFormat(payload[0]);
+            payload = payload.Slice(1);
+
+            while (payload.Length > 0)
+            {
+                if (!MessageFormatter.TryParseMessage(payload, messageFormat, out var message, out var consumed))
+                {
+                    throw new InvalidDataException("Invalid message payload from server");
+                }
+
+                payload = payload.Slice(consumed);
+                yield return message;
+            }
+        }
+
         private async Task SendMessages(Uri sendUrl, CancellationToken cancellationToken)
         {
+            TaskCompletionSource<object> sendTcs = null;
             try
             {
                 while (await _application.Input.WaitToReadAsync(cancellationToken))
                 {
-                    while (!cancellationToken.IsCancellationRequested && _application.Input.TryRead(out Message message))
+                    while (!cancellationToken.IsCancellationRequested && _application.Input.TryRead(out SendMessage message))
                     {
-                        using (message)
-                        {
-                            var request = new HttpRequestMessage(HttpMethod.Post, sendUrl);
-                            request.Headers.UserAgent.Add(DefaultUserAgentHeader);
-                            request.Content = new ReadableBufferContent(message.Payload.Buffer);
+                        sendTcs = message.SendResult;
+                        var request = new HttpRequestMessage(HttpMethod.Post, sendUrl);
+                        request.Headers.UserAgent.Add(DefaultUserAgentHeader);
 
-                            var response = await _httpClient.SendAsync(request);
-                            response.EnsureSuccessStatusCode();
+                        if (message.Payload != null && message.Payload.Length > 0)
+                        {
+                            request.Content = new ByteArrayContent(message.Payload);
                         }
+
+                        var response = await _httpClient.SendAsync(request);
+                        response.EnsureSuccessStatusCode();
+                        sendTcs.SetResult(null);
                     }
                 }
             }
             catch (OperationCanceledException)
             {
                 // transport is being closed
+                sendTcs?.TrySetCanceled();
             }
             catch (Exception ex)
             {
                 _logger.LogError("Error while sending to '{0}': {1}", sendUrl, ex);
+                sendTcs?.TrySetException(ex);
                 throw;
             }
             finally
